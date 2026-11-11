@@ -1,0 +1,14 @@
+{
+  "model": "Qwen/Qwen3-4B",
+  "gpu": "Tesla T4",
+  "dtype": "torch.bfloat16",
+  "attn": "sdpa",
+  "logits_to_keep": 0,
+  "torch": "2.14.1+cu130",
+  "transformers": "5.22.2",
+  "python": "3.13.16",
+  "n_params": 4022468096,
+  "weight_bytes_measured": 8101709824,
+  "trials": 5,
+  "warmup": 2
+}
