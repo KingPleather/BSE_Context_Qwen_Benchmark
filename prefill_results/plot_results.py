@@ -31,35 +31,61 @@ def main():
 
     dfs = {label_of(c): pd.read_csv(c).query("status == 'ok'") for c in args.csvs}
 
-    # 1. Latency vs prompt length, with compute-bound prediction
+    # Runs often overlap almost exactly, so each run gets its own colour, marker
+    # and line style, used consistently across every graph.
+    styles = [("o", "-"), ("s", "--"), ("^", ":"), ("D", "-.")]
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    def run_style(i):
+        m, ls = styles[i % len(styles)]
+        return dict(color=colors[i % len(colors)], marker=m, ls=ls,
+                    markersize=7 - i, fillstyle="none" if i else "full")
+
+    # 1. Latency vs prompt length, with compute-bound predictions
     plt.figure(figsize=(6, 4.5))
-    for name, df in dfs.items():
-        plt.plot(df.S, df.latency_ms_median, "o-", label=f"measured ({name})")
+    for i, (name, df) in enumerate(dfs.items()):
+        plt.plot(df.S, df.latency_ms_median, label=f"measured ({name})", **run_style(i))
     ref = next(iter(dfs.values()))
     pred_ms = ref.flops_total / (args.peak_tflops * 1e12 * args.eff) * 1000
     plt.plot(ref.S, pred_ms, "k--", label=f"predicted (FLOPs / {args.eff:.0%} of peak)")
+    # Same FLOP model, but with the efficiency the GPU actually reached at its best.
+    # If measured points follow this line, latency *scales* as the FLOP model says.
+    best_tflops = ref.achieved_tflops.max()
+    plt.plot(ref.S, ref.flops_total / (best_tflops * 1e12) * 1000, color="gray", ls=":",
+             label=f"FLOP model at measured best ({best_tflops:.2f} TFLOP/s)")
     plt.xscale("log", base=2); plt.yscale("log")
     plt.xlabel("Prompt length S (tokens)"); plt.ylabel("Prefill latency (ms)")
     plt.title("Prefill latency vs prompt length"); plt.grid(True, which="both", alpha=0.3)
-    plt.legend(); plt.tight_layout()
+    plt.legend(fontsize=8); plt.tight_layout()
     plt.savefig(f"{args.outdir}/latency_vs_S.png", dpi=200)
 
-    # 2. Peak memory vs prompt length, with prediction
+    # 2. Peak memory vs prompt length, with prediction (same colour per run;
+    # runs with identical predictions share one dashed line)
     plt.figure(figsize=(6, 4.5))
-    for name, df in dfs.items():
-        plt.plot(df.S, df.peak_alloc_bytes / 1e9, "o-", label=f"measured peak ({name})")
-        plt.plot(df.S, df.mem_total_pred / 1e9, "--", label=f"predicted: weights+KV+logits ({name})")
+    groups = []  # [(color index, S, prediction, [run names])]
+    for i, (name, df) in enumerate(dfs.items()):
+        plt.plot(df.S, df.peak_alloc_bytes / 1e9, label=f"measured ({name})", **run_style(i))
+        pred = (df.mem_total_pred / 1e9).values
+        for g in groups:
+            n = min(len(g[2]), len(pred))
+            if abs(g[2][:n] - pred[:n]).max() < 1e-3:
+                g[3].append(name)
+                break
+        else:
+            groups.append((i, df.S.values, pred, [name]))
+    for i, S, pred, names in groups:
+        plt.plot(S, pred, color=colors[i % len(colors)], ls="--", lw=1.2,
+                 label=f"predicted ({' & '.join(names)})")
     plt.xscale("log", base=2)
-    plt.xlabel("Prompt length S (tokens)"); plt.ylabel("Memory (GB)")
-    plt.title("Peak GPU memory vs prompt length"); plt.grid(True, alpha=0.3)
+    plt.xlabel("Prompt length S (tokens)"); plt.ylabel("Peak memory (GB)")
+    plt.title("Peak GPU memory vs prompt length\n(predicted = weights + KV cache + logits)")
+    plt.grid(True, alpha=0.3)
     plt.legend(fontsize=8); plt.tight_layout()
     plt.savefig(f"{args.outdir}/memory_vs_S.png", dpi=200)
 
     # 3. Achieved throughput (TFLOP/s) vs prompt length
-    # Runs often overlap almost exactly, so each gets its own marker/line style,
-    # and the y-axis is zoomed to the data (GPU peak is stated in the title
+    # The y-axis is zoomed to the data (GPU peak is stated in the title
     # instead of drawn, since a line at the peak squashes the data to the floor).
-    styles = [("o", "-"), ("s", "--"), ("^", ":"), ("D", "-.")]
     plt.figure(figsize=(6, 4.5))
     for i, (name, df) in enumerate(dfs.items()):
         m, ls = styles[i % len(styles)]
