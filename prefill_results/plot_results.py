@@ -56,13 +56,22 @@ def main():
     plt.savefig(f"{args.outdir}/memory_vs_S.png", dpi=200)
 
     # 3. Achieved throughput (TFLOP/s) vs prompt length
+    # Runs often overlap almost exactly, so each gets its own marker/line style,
+    # and the y-axis is zoomed to the data (GPU peak is stated in the title
+    # instead of drawn, since a line at the peak squashes the data to the floor).
+    styles = [("o", "-"), ("s", "--"), ("^", ":"), ("D", "-.")]
     plt.figure(figsize=(6, 4.5))
-    for name, df in dfs.items():
-        plt.plot(df.S, df.achieved_tflops, "o-", label=name)
-    plt.axhline(args.peak_tflops, color="k", ls="--", label="GPU peak")
+    for i, (name, df) in enumerate(dfs.items()):
+        m, ls = styles[i % len(styles)]
+        plt.plot(df.S, df.achieved_tflops, marker=m, ls=ls, markersize=7 - i,
+                 fillstyle="none" if i else "full", label=name)
+    ymax = max(df.achieved_tflops.max() for df in dfs.values())
+    plt.ylim(0, ymax * 1.25)
     plt.xscale("log", base=2)
     plt.xlabel("Prompt length S (tokens)"); plt.ylabel("Achieved TFLOP/s")
-    plt.title("Hardware utilization vs prompt length"); plt.grid(True, alpha=0.3)
+    plt.title(f"Hardware utilization vs prompt length\n(GPU peak = {args.peak_tflops:g} TFLOP/s, "
+              f"best achieved = {ymax / args.peak_tflops:.1%} of peak)")
+    plt.grid(True, alpha=0.3)
     plt.legend(); plt.tight_layout()
     plt.savefig(f"{args.outdir}/tflops_vs_S.png", dpi=200)
 

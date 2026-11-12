@@ -78,7 +78,11 @@ def main():
     device = "cuda"
 
     if args.dtype == "auto":
-        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        # BF16 tensor cores need compute capability >= 8.0 (A100, L4, H100).
+        # Older GPUs like the T4 (7.5) only *emulate* BF16, which is very slow,
+        # even though torch.cuda.is_bf16_supported() may still return True.
+        major, _ = torch.cuda.get_device_capability(0)
+        dtype = torch.bfloat16 if major >= 8 else torch.float16
     else:
         dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
     bytes_per_el = 2
