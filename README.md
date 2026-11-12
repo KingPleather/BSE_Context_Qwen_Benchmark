@@ -14,11 +14,11 @@ Measuring how prefill latency and GPU memory grow with prompt length in Qwen3-4B
 
 ## Key findings
 
-- **Short prompts are overhead-bound.** From 16 to 64 tokens, latency barely moves (187 to 217 ms). Streaming 8 GB of weights and launching kernels costs more than the actual math.
-- **Long prompts scale superlinearly.** Going from 128 to 4096 tokens (32x) increases latency about 46x, as the quadratic attention term grows from 0.5% to 14% of total FLOPs.
-- **The memory model holds until activations take over.** Weights + KV cache + logits predicts peak memory within 0.15 GB up to 512 tokens. At 4096 tokens, transient activations add about 5.3 GB the model doesn't account for, and 8192 tokens runs out of memory on a 15 GB T4.
-- **Full-sequence logits are wasted work in prefill.** Keeping only the last position's logits saves about 1.2 s at 4096 tokens.
-- **Hardware matters as much as the model.** The T4 lacks native bfloat16, so throughput topped out near 2.6 TFLOP/s (about 4% of peak), leaving measured latency well above the compute-bound prediction.
+- **Short prompts are overhead-bound.** Below 128 tokens, latency stays between 54 and 63 ms no matter how few tokens there are.
+- **Latency tracks FLOPs at a steady 2 to 3x the compute-bound estimate.** The T4 reached at most 19.7 TFLOP/s (30% of its fp16 peak), and past about 2048 tokens latency grows faster than FLOPs as attention reaches 25% of the work at 8192 tokens.
+- **The memory model holds with a fused attention kernel.** With SDPA, weights + KV cache + logits predicts peak memory within 0.7 GB all the way to 8192 tokens.
+- **Eager attention breaks it.** Materializing the `S × S` score matrix adds 4.5 GB at 4096 tokens, growing with S², and makes prefill 2.3x slower than SDPA.
+- **Precision matters most on older GPUs.** The T4 has no native bfloat16, and our first sweep in emulated bf16 was up to 8.4x slower than fp16 and ran out of memory at 8192 tokens.
 
 ## Research question
 
@@ -29,7 +29,7 @@ Measuring how prefill latency and GPU memory grow with prompt length in Qwen3-4B
 | | |
 |---|---|
 | Model | [`Qwen/Qwen3-4B`](https://huggingface.co/Qwen/Qwen3-4B), 4.02B parameters |
-| Precision | bfloat16 |
+| Precision | float16 (auto-selected; the T4 has no native bf16) |
 | GPU | NVIDIA Tesla T4, 15 GB (Google Colab) |
 | Software | PyTorch 2.14.1 (CUDA 13.0), Transformers 5.22.2, Python 3.13.16 |
 | Batch size | 1 |
@@ -73,15 +73,15 @@ Predicted latency assumes a compute-bound pass at 60% of the GPU's peak dense th
 
 | S | A (ms) | B (ms) | C (ms) | Peak mem, B (GB) | Predicted, B (GB) | Attention FLOPs |
 |---:|---:|---:|---:|---:|---:|---:|
-| 16 | 189.7 | 187.1 | 187.0 | 8.11 | 8.10 | 0.1% |
-| 128 | 397.1 | 395.8 | 392.9 | 8.15 | 8.12 | 0.5% |
-| 512 | 1,652.2 | 1,645.4 | 1,650.5 | 8.31 | 8.18 | 2.0% |
-| 1024 | 3,606.7 | 3,502.7 | 3,536.8 | 8.69 | 8.25 | 4.0% |
-| 2048 | 8,241.3 | 7,464.9 | 7,647.5 | 9.84 | 8.40 | 7.7% |
-| 4096 | 19,279.2 | 18,065.9 | 18,524.4 | 14.01 | 8.71 | 14.3% |
-| 8192 | OOM | OOM | not run | | | |
+| 16 | 56.3 | 58.1 | 59.8 | 8.11 | 8.10 | 0.1% |
+| 128 | 68.1 | 68.9 | 75.3 | 8.14 | 8.12 | 0.5% |
+| 512 | 214.2 | 220.9 | 268.9 | 8.23 | 8.18 | 2.0% |
+| 1024 | 434.2 | 439.5 | 585.5 | 8.38 | 8.25 | 4.0% |
+| 2048 | 921.1 | 935.9 | 1,494.3 | 8.57 | 8.40 | 7.7% |
+| 4096 | 2,101.5 | 2,146.2 | 4,943.6 | 9.04 | 8.71 | 14.3% |
+| 8192 | 5,498.9 | 5,695.5 | not run | 9.97 | 9.31 | 25.0% |
 
-Run-to-run variation stayed at or below 1.1% (std / median) across every configuration. Full raw data with min, median, and std for each point is in [`prefill_results/results/`](prefill_results/results/), alongside metadata files recording the exact environment of each run.
+From 128 tokens up, run-to-run variation stayed at or below 2.7% (std / median). Below 128 tokens, where each pass takes under 100 ms, it reached up to 11%. Full raw data with min, median, and std for each point is in [`prefill_results/results/`](prefill_results/results/), alongside metadata files recording the exact environment of each run.
 
 <table>
   <tr>
@@ -128,7 +128,7 @@ python plot_results.py results/A_sdpa_all_logits.csv results/B_sdpa_last_logit.c
     results/C_eager_last_logit.csv --peak-tflops 65
 ```
 
-`--peak-tflops` should match your GPU's dense FP16/BF16 peak (T4: 65, L4: 121, A100: 312, H100: 989). Other options: `--trials`, `--warmup`, `--dtype {auto,bf16,fp16}`, `--seed`. Sweeps stop cleanly at the first out-of-memory length.
+`--peak-tflops` should match your GPU's dense FP16/BF16 peak (T4: 65, L4: 121, A100: 312, H100: 989). The script picks fp16 automatically on GPUs below compute capability 8.0 and bf16 on newer ones. Other options: `--trials`, `--warmup`, `--dtype {auto,bf16,fp16}`, `--seed`. Sweeps stop cleanly at the first out-of-memory length.
 
 ## Project structure
 
@@ -144,10 +144,11 @@ python plot_results.py results/A_sdpa_all_logits.csv results/B_sdpa_last_logit.c
 
 ## Limitations
 
-- Results come from a single T4 running emulated bfloat16, so absolute latencies understate what native bf16 hardware (L4, A100, H100) would achieve.
+- Results come from a single T4, so absolute latencies would differ on an L4, A100, or H100.
+- Runs A, B, and C were swept one after another without locked GPU clocks, so small differences between them (run A edging out run B) may reflect clock or thermal drift.
+- Which attention kernel SDPA used is inferred from memory behavior, not profiled.
 - Only batch size 1 is measured.
-- The memory model omits transient activations and underestimates peak usage at long contexts.
-- FlashAttention 2 is not supported on the T4's Turing architecture and was not tested.
+- The memory model omits transient activations, so it slightly underestimates peak usage at long contexts with SDPA and badly underestimates it with eager attention.
 
 ## Authors
 
